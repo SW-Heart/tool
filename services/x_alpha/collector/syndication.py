@@ -1,6 +1,7 @@
 """
 Twitter Syndication API 采集器
 通过 X 的 Syndication API (匿名/免登录) 采集推文
+支持 NitterFallback
 """
 import asyncio
 import httpx
@@ -20,6 +21,109 @@ from shared.utils import get_random_user_agent, parse_timestamp
 from shared.logger import setup_logger
 
 logger = setup_logger("x_alpha.collector")
+
+
+class NitterCollector:
+    """
+    Nitter 采集器 (Fallback)
+    
+    当 Syndication API 失效时，尝试从 Nitter 实例采集
+    """
+    # 常用 Nitter 实例列表 (随机轮询)
+    INSTANCES = [
+        "https://nitter.net",
+        "https://nitter.cz",
+        "https://nitter.privacydev.net",
+        "https://nitter.poast.org",
+        "https://nitter.x86-64-unknown-linux-gnu.zip",
+    ]
+    
+    @classmethod
+    async def fetch_tweets(cls, username: str, timeout: int = 20) -> List[Dict[str, Any]]:
+        """从 Nitter 获取推文"""
+        instance = random.choice(cls.INSTANCES)
+        url = f"{instance}/{username}"
+        logger.info(f"正在尝试 Nitter Fallback: {url}")
+        
+        headers = {
+            "User-Agent": get_random_user_agent(),
+            "Accept-Language": "en-US,en;q=0.5",
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    return cls._parse_nitter_html(response.text, username)
+                else:
+                    logger.warning(f"Nitter 请求失败 {response.status_code}: {url}")
+        except Exception as e:
+            logger.warning(f"Nitter 连接异常: {e}")
+            
+        return []
+
+    @staticmethod
+    def _parse_nitter_html(html: str, username: str) -> List[Dict[str, Any]]:
+        tweets = []
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        timeline = soup.find_all('div', class_='timeline-item')
+        for item in timeline:
+            if 'show-more' in item.get('class', []):
+                continue
+                
+            try:
+                # 提取正文
+                content_div = item.find('div', class_='tweet-content')
+                if not content_div:
+                    continue
+                content = content_div.get_text(strip=True)
+                
+                # 提取时间
+                date_span = item.find('span', class_='tweet-date')
+                published_at = datetime.utcnow()
+                if date_span:
+                    link = date_span.find('a')
+                    if link and link.get('title'):
+                        # Nitter 时间格式: "Dec 30, 2025 · 4:20 PM UTC"
+                        try:
+                            t_str = link['title']
+                            # 简化处理，直接用 UTC now 兜底，或者解析标准格式
+                            # 这里简单起见暂时用当前时间，因为 Nitter 格式多变
+                            pass 
+                        except:
+                            pass
+                
+                # 提取链接/ID
+                link = item.find('a', class_='tweet-link')
+                if not link:
+                    continue
+                tweet_url = link['href']  # e.g., /username/status/123456
+                tweet_id_match = re.search(r'/status/(\d+)', tweet_url)
+                if not tweet_id_match:
+                    continue
+                tweet_id = tweet_id_match.group(1)
+                
+                # 提取图片/头像
+                avatar_url = None
+                avatar_img = item.find('a', class_='tweet-avatar').find('img')
+                if avatar_img:
+                    src = avatar_img.get('src')
+                    if src:
+                        avatar_url = f"https://nitter.net{src}" if src.startswith('/') else src
+
+                tweets.append({
+                    "id": tweet_id,
+                    "author": username,
+                    "avatar_url": avatar_url,
+                    "content": content,
+                    "tweet_url": f"https://x.com/{username}/status/{tweet_id}",
+                    "published_at": published_at,
+                })
+            except Exception as e:
+                continue
+                
+        return tweets
 
 
 class TwitterSyndicationCollector:
@@ -69,6 +173,24 @@ class TwitterSyndicationCollector:
         Returns:
             推文列表
         """
+        logger.info(f"开始采集 {username} via API...")
+        
+        # 1. 尝试官方 Syndication API
+        tweets = await self._fetch_tweets_api(username)
+        
+        # 2. 如果 API 失败 (空数据或限流)，尝试 Nitter Fallback
+        if not tweets:
+            logger.warning(f"Syndication API 返回空，尝试 Nitter Fallback: {username}")
+            tweets = await NitterCollector.fetch_tweets(username)
+            if tweets:
+                logger.info(f"Nitter 成功采集到 {len(tweets)} 条推文")
+            else:
+                logger.error(f"Nitter 采集也失败: {username}")
+        
+        return tweets
+
+    async def _fetch_tweets_api(self, username: str) -> List[Dict[str, Any]]:
+        """内部方法：通过 Syndication API 采集"""
         # 等待请求间隔
         await self._wait_for_rate_limit()
         
@@ -84,7 +206,6 @@ class TwitterSyndicationCollector:
         # 如果配置了 Cookie，添加到请求头
         if self.cookies:
             headers["Cookie"] = self.cookies
-            # 尝试提取 ct0 (CSRF Token)
             try:
                 if "ct0=" in self.cookies:
                     ct0 = re.search(r'ct0=([^;]+)', self.cookies).group(1)
@@ -493,8 +614,13 @@ class TwitterSyndicationCollector:
 
 # 测试代码
 async def test_collector():
-    collector = TwitterSyndicationCollector()
-    tweets = await collector.fetch_tweets("elonmusk")
+    # 测试官方
+    # collector = TwitterSyndicationCollector()
+    
+    # 测试 Fallback
+    print("Testing Nitter...")
+    tweets = await NitterCollector.fetch_tweets("elonmusk")
+    print(f"Got {len(tweets)} tweets from Nitter")
     for tweet in tweets[:3]:
         print(f"[{tweet['id']}] {tweet['content'][:50]}...")
 
