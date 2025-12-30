@@ -197,18 +197,30 @@ def serve(host: str, port: int):
 
 
 @cli.command()
-@click.option('--etf', '-e', multiple=True, default=['btc'], 
+@click.option('--etf', '-e', multiple=True, 
               type=click.Choice(['btc', 'eth', 'sol']), help='要爬取的ETF类型')
+@click.option('--all', 'all_etf', is_flag=True, help='爬取所有ETF类型(btc/eth/sol)')
 @click.option('--now', is_flag=True, help='立即执行一次爬取')
-def scheduler(etf, now):
+def scheduler(etf, all_etf, now):
     """
     启动定时爬取调度器
     
     每天 00:00, 06:00, 12:00, 18:00 自动爬取
+    
+    示例:
+      python cli.py scheduler --all --now
+      python cli.py scheduler -e btc -e eth --now
     """
     from scheduler.cron import ETFScheduler
     
-    etf_types = list(etf)
+    # 确定要爬取的ETF类型
+    if all_etf:
+        etf_types = ['btc', 'eth', 'sol']
+    elif etf:
+        etf_types = list(etf)
+    else:
+        etf_types = ['btc']  # 默认只爬BTC
+    
     click.echo("=" * 50)
     click.echo("ETF 定时爬取调度器")
     click.echo("=" * 50)
