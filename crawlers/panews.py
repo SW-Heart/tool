@@ -174,12 +174,27 @@ class PANewsCrawler:
                             
                             const [h, m] = time.split(':').map(Number);
                             
+                                // 构建完整的发布时间 (用于排序)
+                            const now = new Date();
+                            const year = now.getFullYear();
+                            let fullDateTime = '';
+                            if (dateMatch) {
+                                const month = parseInt(dateMatch[1]);
+                                const day = parseInt(dateMatch[2]);
+                                // 格式: 2026-01-05 12:45
+                                fullDateTime = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')} ${time}`;
+                            } else {
+                                // 没有日期则用今天
+                                fullDateTime = `${year}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${time}`;
+                            }
+                            
                             results.push({
                                 time,
                                 title,
                                 content: description,
                                 link: href,
                                 isImportant: hasImportantTag,
+                                publishDateTime: fullDateTime,  // 完整日期时间
                                 _dateNum: dateNum,
                                 _timeNum: h * 60 + m
                             });

@@ -79,7 +79,7 @@ class NewsStorage:
                         news.get('title', ''),
                         news.get('content', ''),
                         news.get('link', ''),
-                        news.get('time', ''),
+                        news.get('publishDateTime', news.get('time', '')),  # 使用完整日期时间
                         news.get('crawled_at', datetime.now().isoformat()),
                         1 if news.get('isImportant') else 0,
                         json.dumps(news.get('extra', {}), ensure_ascii=False)
@@ -110,13 +110,13 @@ class NewsStorage:
                 cursor = conn.execute(f'''
                     SELECT * FROM news 
                     WHERE source = ? 
-                    ORDER BY crawled_at {order}
+                    ORDER BY publish_time {order}
                     LIMIT ?
                 ''', (source, limit))
             else:
                 cursor = conn.execute(f'''
                     SELECT * FROM news 
-                    ORDER BY crawled_at {order}
+                    ORDER BY publish_time {order}
                     LIMIT ?
                 ''', (limit,))
             
