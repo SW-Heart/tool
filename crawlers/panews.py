@@ -1,0 +1,286 @@
+"""
+PANews Crawler - 获取 PANews 重要快讯
+https://www.panewslab.com/zh/newsflash
+"""
+
+import asyncio
+import json
+import hashlib
+from datetime import datetime
+from typing import Optional
+from pathlib import Path
+
+try:
+    from playwright.async_api import async_playwright, Browser, Page
+except ImportError:
+    raise ImportError("请安装 playwright: pip install playwright && playwright install chromium")
+
+
+class PANewsCrawler:
+    """PANews 重要资讯爬虫"""
+    
+    BASE_URL = "https://www.panewslab.com/zh/newsflash"
+    
+    def __init__(self, headless: bool = True, cache_dir: Optional[str] = None):
+        """
+        初始化爬虫
+        
+        Args:
+            headless: 是否无头模式运行浏览器
+            cache_dir: 缓存目录，用于去重
+        """
+        self.headless = headless
+        self.cache_dir = Path(cache_dir) if cache_dir else Path("./data/panews_cache")
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._seen_ids_file = self.cache_dir / "seen_ids.json"
+        self._seen_ids: set = self._load_seen_ids()
+    
+    def _load_seen_ids(self) -> set:
+        """加载已爬取的新闻ID"""
+        if self._seen_ids_file.exists():
+            with open(self._seen_ids_file, 'r') as f:
+                return set(json.load(f))
+        return set()
+    
+    def _save_seen_ids(self):
+        """保存已爬取的新闻ID"""
+        with open(self._seen_ids_file, 'w') as f:
+            json.dump(list(self._seen_ids), f)
+    
+    def _generate_id(self, title: str, time_str: str) -> str:
+        """生成新闻唯一ID"""
+        content = f"{title}_{time_str}"
+        return hashlib.md5(content.encode()).hexdigest()[:12]
+    
+    async def _close_popups(self, page: Page):
+        """关闭各种弹窗"""
+        try:
+            # 关闭 OneSignal 订阅弹窗
+            cancel_btn = await page.query_selector('#onesignal-slidedown-cancel-button')
+            if cancel_btn:
+                await cancel_btn.click()
+                await asyncio.sleep(0.5)
+            
+            # 关闭公告弹窗 (点击关闭按钮或背景)
+            close_btns = await page.query_selector_all('button[aria-label="close"], .close-btn, [class*="close"]')
+            for btn in close_btns:
+                try:
+                    await btn.click()
+                    await asyncio.sleep(0.3)
+                except:
+                    pass
+        except Exception as e:
+            print(f"关闭弹窗时出错: {e}")
+    
+    async def _enable_important_filter(self, page: Page):
+        """启用"只看重要"筛选"""
+        try:
+            # 方法1: 直接点击筛选按钮 (根据 DOM 分析结果)
+            result = await page.evaluate('''
+                () => {
+                    // 方法1: 使用 button#v-0-0 (只看重要按钮)
+                    const filterBtn = document.querySelector('button#v-0-0');
+                    if (filterBtn) {
+                        filterBtn.click();
+                        return "button_clicked";
+                    }
+                    
+                    // 方法2: 查找包含"只看重要"文本的元素
+                    const elements = document.querySelectorAll('label, span, div, button');
+                    for (const el of elements) {
+                        if (el.textContent?.trim() === '只看重要') {
+                            el.click();
+                            return "text_clicked";
+                        }
+                    }
+                    
+                    // 方法3: 查找 checkbox
+                    const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                    for (const cb of checkboxes) {
+                        const label = cb.closest('label') || cb.nextElementSibling;
+                        if (label?.textContent?.includes('只看重要')) {
+                            if (!cb.checked) cb.click();
+                            return "checkbox_clicked";
+                        }
+                    }
+                    
+                    return "not_found";
+                }
+            ''')
+            print(f"筛选器状态: {result}")
+            await asyncio.sleep(2)  # 等待筛选生效
+        except Exception as e:
+            print(f"启用筛选器失败: {e}")
+    
+    async def _extract_news(self, page: Page) -> list[dict]:
+        """从页面提取新闻列表 (基于 DOM 结构分析的选择器)"""
+        news_list = await page.evaluate('''
+            () => {
+                const results = [];
+                
+                // 基于 DOM 分析的选择器:
+                // - 标题链接: a.text-neutrals-80 或 a[href*="/articles/"]
+                // - 描述: div.text-neutrals-60
+                // - 时间: span.text-neutrals-60.w-12
+                
+                const titleLinks = document.querySelectorAll('a.text-neutrals-80, a[href*="/articles/"]');
+                
+                for (const link of titleLinks) {
+                    // 排除侧边栏的链接
+                    if (link.closest('aside') || link.closest('nav')) continue;
+                    
+                    // 获取标题
+                    const title = link.textContent?.trim();
+                    if (!title || title.length < 5) continue;
+                    
+                    // 获取链接
+                    const href = link.href || link.getAttribute('href') || '';
+                    
+                    // 向上查找容器以获取时间和描述
+                    const contentContainer = link.closest('.border-b-neutrals-20') || link.closest('div');
+                    if (!contentContainer) continue;
+                    
+                    // 获取描述 (标题下方的文字)
+                    const descEl = contentContainer.querySelector('div.text-neutrals-60, div.line-clamp-3, div.line-clamp-2');
+                    const description = descEl?.textContent?.trim() || '';
+                    
+                    // 获取时间 (在父容器的前面)
+                    const parentRow = contentContainer.parentElement;
+                    let time = '';
+                    if (parentRow) {
+                        const timeEl = parentRow.querySelector('span.text-neutrals-60.w-12, .text-sm');
+                        if (timeEl) {
+                            const timeText = timeEl.textContent?.trim();
+                            // 验证是否是时间格式 (HH:MM)
+                            if (/^\d{1,2}:\d{2}$/.test(timeText)) {
+                                time = timeText;
+                            }
+                        }
+                    }
+                    
+                    // 检查是否有"首发"或"重要"标签
+                    const hasImportantTag = contentContainer.querySelector('span.bg-brand-primary') !== null;
+                    
+                    // 避免重复 (通过 href)
+                    if (results.some(r => r.link === href)) continue;
+                    
+                    results.push({
+                        time,
+                        title,
+                        content: description,
+                        link: href,
+                        isImportant: hasImportantTag
+                    });
+                }
+                
+                return results;
+            }
+        ''')
+        return news_list
+    
+    async def fetch_important_news(self, only_new: bool = True, save_to_db: bool = True) -> list[dict]:
+        """
+        获取重要快讯
+        
+        Args:
+            only_new: 是否只返回新的（未见过的）新闻
+            save_to_db: 是否保存到数据库
+            
+        Returns:
+            新闻列表，每条包含 time, title, content, link, id
+        """
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=self.headless)
+            context = await browser.new_context(
+                viewport={'width': 1280, 'height': 800},
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+            )
+            page = await context.new_page()
+            
+            try:
+                print(f"正在访问 {self.BASE_URL}...")
+                await page.goto(self.BASE_URL, wait_until='domcontentloaded', timeout=60000)
+                await asyncio.sleep(5)  # 等待JS渲染完成
+                
+                # 关闭弹窗
+                await self._close_popups(page)
+                
+                # 启用"只看重要"筛选
+                await self._enable_important_filter(page)
+                
+                # 等待内容加载
+                await asyncio.sleep(2)
+                
+                # 提取新闻
+                news_list = await self._extract_news(page)
+                print(f"共抓取到 {len(news_list)} 条资讯")
+                
+                # 处理结果
+                results = []
+                for news in news_list:
+                    news_id = self._generate_id(news['title'], news['time'])
+                    
+                    if only_new and news_id in self._seen_ids:
+                        continue
+                    
+                    news['id'] = news_id
+                    news['crawled_at'] = datetime.now().isoformat()
+                    news['source'] = 'PANews'
+                    results.append(news)
+                    
+                    self._seen_ids.add(news_id)
+                
+                # 保存已见ID
+                self._save_seen_ids()
+                
+                # 保存到数据库
+                if save_to_db and results:
+                    from .storage import get_storage
+                    storage = get_storage()
+                    inserted = storage.save_news(results)
+                    print(f"💾 保存 {inserted} 条新资讯到数据库")
+                    # 清理过期数据
+                    storage.cleanup_expired()
+                
+                print(f"其中 {len(results)} 条为新资讯")
+                return results
+                
+            except Exception as e:
+                print(f"爬取失败: {e}")
+                raise
+            finally:
+                await browser.close()
+    
+    def fetch_sync(self, only_new: bool = True, save_to_db: bool = True) -> list[dict]:
+        """
+        同步版本的获取方法
+        
+        Args:
+            only_new: 只返回新资讯
+            save_to_db: 是否保存到数据库
+        """
+        return asyncio.run(self.fetch_important_news(only_new, save_to_db))
+
+
+# 命令行测试
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='PANews 重要资讯爬虫')
+    parser.add_argument('--no-headless', action='store_true', help='显示浏览器窗口')
+    parser.add_argument('--all', action='store_true', help='获取所有资讯，不去重')
+    args = parser.parse_args()
+    
+    crawler = PANewsCrawler(headless=not args.no_headless)
+    news = crawler.fetch_sync(only_new=not args.all)
+    
+    print("\n" + "="*60)
+    print(f"获取到 {len(news)} 条重要资讯:")
+    print("="*60)
+    
+    for item in news:
+        print(f"\n⏰ {item['time']}")
+        print(f"📰 {item['title']}")
+        if item['content']:
+            print(f"   {item['content'][:100]}...")
+        print(f"🔗 {item['link']}")
