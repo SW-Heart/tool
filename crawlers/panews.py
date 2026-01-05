@@ -125,94 +125,83 @@ class PANewsCrawler:
             print(f"启用筛选器失败: {e}")
     
     async def _extract_news(self, page: Page) -> list[dict]:
-        """从页面提取新闻列表 (基于 DOM 结构分析的选择器)"""
-        news_list = await page.evaluate('''
+        """从页面提取新闻列表 - 只抓取有时间的快讯，按日期+时间排序"""
+        news_list = await page.evaluate(r'''
             () => {
                 const results = [];
+                const timeRegex = /^\d{1,2}:\d{2}$/;
                 
-                // 基于 DOM 分析的选择器:
-                // - 标题链接: a.text-neutrals-80 或 a[href*="/articles/"]
-                // - 描述: div.text-neutrals-60
-                // - 时间: span.text-neutrals-60.w-12
-                
-                const titleLinks = document.querySelectorAll('a.text-neutrals-80, a[href*="/articles/"]');
-                
-                for (const link of titleLinks) {
-                    // 排除侧边栏的链接
-                    if (link.closest('aside') || link.closest('nav')) continue;
+                // 找到所有时间元素
+                for (const el of document.querySelectorAll('*')) {
+                    if (el.children.length > 0) continue;
+                    const timeText = el.textContent?.trim();
+                    if (!timeText || !timeRegex.test(timeText)) continue;
+                    if (el.closest('aside') || el.closest('nav') || el.closest('[class*="sidebar"]')) continue;
                     
-                    // 获取标题
-                    const title = link.textContent?.trim();
-                    if (!title || title.length < 5) continue;
+                    const time = timeText;
                     
-                    // 获取链接
-                    const href = link.href || link.getAttribute('href') || '';
-                    
-                    // 向上查找容器以获取时间和描述
-                    const contentContainer = link.closest('.border-b-neutrals-20') || link.closest('div');
-                    if (!contentContainer) continue;
-                    
-                    // 获取描述 (标题下方的文字)
-                    const descEl = contentContainer.querySelector('div.text-neutrals-60, div.line-clamp-3, div.line-clamp-2');
-                    const description = descEl?.textContent?.trim() || '';
-                    
-                    // 获取时间 - 多种方式尝试
-                    let time = '';
-                    
-                    // 方式1: 在父容器中查找
-                    const parentRow = contentContainer.parentElement;
-                    if (parentRow) {
-                        // 尝试多种选择器
-                        const timeSelectors = [
-                            'span.text-neutrals-60.w-12',
-                            '.text-sm',
-                            'span.w-12',
-                            'time',
-                            '[class*="time"]'
-                        ];
-                        
-                        for (const selector of timeSelectors) {
-                            const timeEl = parentRow.querySelector(selector);
-                            if (timeEl) {
-                                const timeText = timeEl.textContent?.trim();
-                                // 验证是否是时间格式 (HH:MM)
-                                if (/^\d{1,2}:\d{2}$/.test(timeText)) {
-                                    time = timeText;
-                                    break;
-                                }
+                    // 向上查找新闻内容
+                    let container = el.parentElement;
+                    for (let i = 0; i < 5 && container; i++) {
+                        const link = container.querySelector('a[href*="/articles/"], a[href*="/newsflash/"]');
+                        if (link) {
+                            const title = link.textContent?.trim();
+                            const href = link.href || link.getAttribute('href') || '';
+                            
+                            if (!title || title.length < 5) {
+                                container = container.parentElement;
+                                continue;
                             }
-                        }
-                        
-                        // 方式2: 如果还没找到，在祖先元素中搜索
-                        if (!time) {
-                            const grandParent = parentRow.parentElement;
-                            if (grandParent) {
-                                const allSpans = grandParent.querySelectorAll('span');
-                                for (const span of allSpans) {
-                                    const text = span.textContent?.trim();
-                                    if (/^\d{1,2}:\d{2}$/.test(text)) {
-                                        time = text;
-                                        break;
-                                    }
-                                }
+                            
+                            const descEl = container.querySelector('div.text-neutrals-60, div.line-clamp-3, div.line-clamp-2, p');
+                            let description = descEl?.textContent?.trim() || '';
+                            if (description.startsWith(title)) {
+                                description = description.slice(title.length).trim();
                             }
+                            
+                            // 从摘要中提取日期 (PANews 1月5日消息 -> 1月5日)
+                            let dateNum = 0;  // 用于排序的日期数值
+                            const dateMatch = description.match(/(\d{1,2})月(\d{1,2})日/);
+                            if (dateMatch) {
+                                const month = parseInt(dateMatch[1]);
+                                const day = parseInt(dateMatch[2]);
+                                dateNum = month * 100 + day;  // 105 = 1月5日
+                            }
+                            
+                            const hasImportantTag = container.querySelector('span.bg-brand-primary, [class*="tag"]') !== null;
+                            
+                            if (results.some(r => r.link === href)) break;
+                            
+                            const [h, m] = time.split(':').map(Number);
+                            
+                            results.push({
+                                time,
+                                title,
+                                content: description,
+                                link: href,
+                                isImportant: hasImportantTag,
+                                _dateNum: dateNum,
+                                _timeNum: h * 60 + m
+                            });
+                            break;
                         }
+                        container = container.parentElement;
                     }
-                    
-                    // 检查是否有"首发"或"重要"标签
-                    const hasImportantTag = contentContainer.querySelector('span.bg-brand-primary') !== null;
-                    
-                    // 避免重复 (通过 href)
-                    if (results.some(r => r.link === href)) continue;
-                    
-                    results.push({
-                        time,
-                        title,
-                        content: description,
-                        link: href,
-                        isImportant: hasImportantTag
-                    });
                 }
+                
+                // 排序：日期降序（大的在前），同日时间降序
+                results.sort((a, b) => {
+                    if (a._dateNum !== b._dateNum) {
+                        return b._dateNum - a._dateNum;  // 日期大的在前 (1月5日 > 1月4日)
+                    }
+                    return b._timeNum - a._timeNum;  // 时间大的在前 (12:45 > 11:00)
+                });
+                
+                // 移除排序键
+                results.forEach(r => {
+                    delete r._dateNum;
+                    delete r._timeNum;
+                });
                 
                 return results;
             }
