@@ -91,29 +91,32 @@ class NewsStorage:
         
         return inserted
     
-    def get_latest_news(self, limit: int = 20, source: Optional[str] = None) -> list[dict]:
+    def get_latest_news(self, limit: int = 20, source: Optional[str] = None, sort_desc: bool = True) -> list[dict]:
         """
         获取最新新闻
         
         Args:
             limit: 返回条数
             source: 来源筛选（如 'PANews'）
+            sort_desc: 是否降序排列（默认 True，最新在前）
             
         Returns:
             新闻列表
         """
+        order = "DESC" if sort_desc else "ASC"
+        
         with self._get_conn() as conn:
             if source:
-                cursor = conn.execute('''
+                cursor = conn.execute(f'''
                     SELECT * FROM news 
                     WHERE source = ? 
-                    ORDER BY crawled_at DESC 
+                    ORDER BY crawled_at {order}
                     LIMIT ?
                 ''', (source, limit))
             else:
-                cursor = conn.execute('''
+                cursor = conn.execute(f'''
                     SELECT * FROM news 
-                    ORDER BY crawled_at DESC 
+                    ORDER BY crawled_at {order}
                     LIMIT ?
                 ''', (limit,))
             

@@ -156,16 +156,45 @@ class PANewsCrawler:
                     const descEl = contentContainer.querySelector('div.text-neutrals-60, div.line-clamp-3, div.line-clamp-2');
                     const description = descEl?.textContent?.trim() || '';
                     
-                    // 获取时间 (在父容器的前面)
-                    const parentRow = contentContainer.parentElement;
+                    // 获取时间 - 多种方式尝试
                     let time = '';
+                    
+                    // 方式1: 在父容器中查找
+                    const parentRow = contentContainer.parentElement;
                     if (parentRow) {
-                        const timeEl = parentRow.querySelector('span.text-neutrals-60.w-12, .text-sm');
-                        if (timeEl) {
-                            const timeText = timeEl.textContent?.trim();
-                            // 验证是否是时间格式 (HH:MM)
-                            if (/^\d{1,2}:\d{2}$/.test(timeText)) {
-                                time = timeText;
+                        // 尝试多种选择器
+                        const timeSelectors = [
+                            'span.text-neutrals-60.w-12',
+                            '.text-sm',
+                            'span.w-12',
+                            'time',
+                            '[class*="time"]'
+                        ];
+                        
+                        for (const selector of timeSelectors) {
+                            const timeEl = parentRow.querySelector(selector);
+                            if (timeEl) {
+                                const timeText = timeEl.textContent?.trim();
+                                // 验证是否是时间格式 (HH:MM)
+                                if (/^\d{1,2}:\d{2}$/.test(timeText)) {
+                                    time = timeText;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // 方式2: 如果还没找到，在祖先元素中搜索
+                        if (!time) {
+                            const grandParent = parentRow.parentElement;
+                            if (grandParent) {
+                                const allSpans = grandParent.querySelectorAll('span');
+                                for (const span of allSpans) {
+                                    const text = span.textContent?.trim();
+                                    if (/^\d{1,2}:\d{2}$/.test(text)) {
+                                        time = text;
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }

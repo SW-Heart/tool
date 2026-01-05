@@ -39,19 +39,22 @@ async def root():
 @app.get("/api/news")
 async def get_news(
     limit: int = Query(default=20, ge=1, le=100, description="返回条数"),
-    source: Optional[str] = Query(default=None, description="来源筛选，如 PANews")
+    source: Optional[str] = Query(default=None, description="来源筛选，如 PANews"),
+    sort: str = Query(default="desc", description="排序方式: desc(最新在前) 或 asc(最旧在前)")
 ):
     """
     获取最新新闻
     
     - **limit**: 返回条数（1-100，默认20）
     - **source**: 来源筛选，如 `PANews`
+    - **sort**: 排序方式，desc=降序(默认)，asc=升序
     """
     storage = get_storage()
-    news = storage.get_latest_news(limit=limit, source=source)
+    news = storage.get_latest_news(limit=limit, source=source, sort_desc=(sort.lower() != "asc"))
     
     return {
         "count": len(news),
+        "sort": sort,
         "data": news
     }
 
