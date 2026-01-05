@@ -194,9 +194,7 @@ class PANewsCrawler:
                                 content: description,
                                 link: href,
                                 isImportant: hasImportantTag,
-                                publishDateTime: fullDateTime,  // 完整日期时间
-                                _dateNum: dateNum,
-                                _timeNum: h * 60 + m
+                                publishDateTime: fullDateTime  // 完整日期时间
                             });
                             break;
                         }
@@ -204,19 +202,8 @@ class PANewsCrawler:
                     }
                 }
                 
-                // 排序：日期降序（大的在前），同日时间降序
-                results.sort((a, b) => {
-                    if (a._dateNum !== b._dateNum) {
-                        return b._dateNum - a._dateNum;  // 日期大的在前 (1月5日 > 1月4日)
-                    }
-                    return b._timeNum - a._timeNum;  // 时间大的在前 (12:45 > 11:00)
-                });
-                
-                // 移除排序键
-                results.forEach(r => {
-                    delete r._dateNum;
-                    delete r._timeNum;
-                });
+                // 不再重新排序，保持页面原始顺序（页面已按发布时间排序）
+
                 
                 return results;
             }
