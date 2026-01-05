@@ -51,3 +51,6 @@ Thumbs.db
 
 # Recordings (for local testing)
 *.webp
+
+# Sensitive docs (contains server info)
+docs/NEWS_API.md

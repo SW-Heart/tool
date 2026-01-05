@@ -47,8 +47,20 @@ class PANewsCrawler:
         with open(self._seen_ids_file, 'w') as f:
             json.dump(list(self._seen_ids), f)
     
-    def _generate_id(self, title: str, time_str: str) -> str:
-        """生成新闻唯一ID"""
+    def _generate_id(self, title: str, time_str: str, link: str = '') -> str:
+        """
+        生成新闻唯一ID
+        优先使用 link (文章URL) 作为唯一标识
+        """
+        # 优先使用 link，这是最可靠的唯一标识
+        if link:
+            # 从 link 中提取文章 ID
+            # 例如: https://www.panewslab.com/zh/articles/abc123 -> abc123
+            article_id = link.rstrip('/').split('/')[-1]
+            if article_id and len(article_id) > 5:
+                return hashlib.md5(article_id.encode()).hexdigest()[:12]
+        
+        # 备用：使用 title + time
         content = f"{title}_{time_str}"
         return hashlib.md5(content.encode()).hexdigest()[:12]
     
@@ -218,7 +230,7 @@ class PANewsCrawler:
                 # 处理结果
                 results = []
                 for news in news_list:
-                    news_id = self._generate_id(news['title'], news['time'])
+                    news_id = self._generate_id(news['title'], news.get('time', ''), news.get('link', ''))
                     
                     if only_new and news_id in self._seen_ids:
                         continue

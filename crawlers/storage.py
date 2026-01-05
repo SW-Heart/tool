@@ -52,6 +52,8 @@ class NewsStorage:
             # 创建索引加速查询
             conn.execute('CREATE INDEX IF NOT EXISTS idx_crawled_at ON news(crawled_at)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_source ON news(source)')
+            # 添加 link 唯一索引防止重复
+            conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_link ON news(link)')
     
     def save_news(self, news_list: list[dict]) -> int:
         """
