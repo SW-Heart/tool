@@ -110,13 +110,13 @@ class NewsStorage:
                 cursor = conn.execute(f'''
                     SELECT * FROM news 
                     WHERE source = ? 
-                    ORDER BY publish_time {order}
+                    ORDER BY crawled_at {order}
                     LIMIT ?
                 ''', (source, limit))
             else:
                 cursor = conn.execute(f'''
                     SELECT * FROM news 
-                    ORDER BY publish_time {order}
+                    ORDER BY crawled_at {order}
                     LIMIT ?
                 ''', (limit,))
             

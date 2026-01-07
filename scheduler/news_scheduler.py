@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 class NewsScheduler:
     """新闻爬虫定时调度器"""
     
+    # 稳定性配置
+    MAX_RETRIES = 3  # 单次抓取最大重试次数
+    MAX_CONSECUTIVE_FAILURES = 5  # 连续失败阈值，超过则重置爬虫
+    RETRY_DELAY_SECONDS = 5  # 重试间隔
+    
     def __init__(self, interval_minutes: int = 15):
         """
         初始化调度器
@@ -44,39 +49,73 @@ class NewsScheduler:
         self.storage = get_storage()
         self._running = False
         self._last_run: Optional[datetime] = None
+        self._last_success: Optional[datetime] = None
         self._total_fetched = 0
         self._total_saved = 0
+        self._consecutive_failures = 0
     
     def fetch_news(self):
-        """执行一次新闻抓取"""
+        """执行一次新闻抓取（带重试机制）"""
         logger.info("=" * 50)
         logger.info(f"🚀 开始抓取 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 50)
         
-        try:
-            # 抓取新闻（自动保存到数据库）
-            news = self.crawler.fetch_sync(only_new=True, save_to_db=True)
-            
-            self._last_run = datetime.now()
-            self._total_fetched += len(news)
-            
-            if news:
-                logger.info(f"✅ 成功抓取 {len(news)} 条新资讯")
-                for item in news[:3]:  # 只显示前3条
-                    logger.info(f"   📰 {item.get('time', '')} | {item['title'][:40]}...")
-                if len(news) > 3:
-                    logger.info(f"   ... 还有 {len(news) - 3} 条")
-            else:
-                logger.info("ℹ️ 暂无新资讯")
-            
-            # 显示统计
-            stats = self.storage.get_stats()
-            logger.info(f"📊 数据库状态: 共 {stats['total']} 条，保留 {stats['retention_hours']} 小时")
-            
-        except Exception as e:
-            logger.error(f"❌ 抓取失败: {e}")
+        self._last_run = datetime.now()
+        last_error = None
+        
+        # 重试机制
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                # 抓取新闻（自动保存到数据库）
+                news = self.crawler.fetch_sync(only_new=True, save_to_db=True)
+                
+                # 成功：重置失败计数
+                self._consecutive_failures = 0
+                self._last_success = datetime.now()
+                self._total_fetched += len(news)
+                
+                if news:
+                    logger.info(f"✅ 成功抓取 {len(news)} 条新资讯")
+                    for item in news[:3]:  # 只显示前3条
+                        logger.info(f"   📰 {item.get('time', '')} | {item['title'][:40]}...")
+                    if len(news) > 3:
+                        logger.info(f"   ... 还有 {len(news) - 3} 条")
+                else:
+                    logger.info("ℹ️ 暂无新资讯")
+                
+                # 显示统计
+                stats = self.storage.get_stats()
+                logger.info(f"📊 数据库状态: 共 {stats['total']} 条，保留 {stats['retention_hours']} 小时")
+                logger.info("=" * 50)
+                return  # 成功则退出
+                
+            except Exception as e:
+                last_error = e
+                if attempt < self.MAX_RETRIES - 1:
+                    logger.warning(f"⚠️ 抓取失败，重试 {attempt + 1}/{self.MAX_RETRIES}: {e}")
+                    time.sleep(self.RETRY_DELAY_SECONDS)
+        
+        # 全部重试失败
+        self._consecutive_failures += 1
+        logger.error(f"❌ 抓取失败（已重试{self.MAX_RETRIES}次）: {last_error}")
+        logger.error(f"⚠️ 连续失败次数: {self._consecutive_failures}/{self.MAX_CONSECUTIVE_FAILURES}")
+        
+        # 检查是否需要重置爬虫
+        if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+            self._reset_crawler()
         
         logger.info("=" * 50)
+    
+    def _reset_crawler(self):
+        """重置爬虫实例（连续失败过多时调用）"""
+        logger.warning("🔄 连续失败过多，正在重置爬虫实例...")
+        try:
+            # 重新创建爬虫实例
+            self.crawler = PANewsCrawler(headless=True)
+            self._consecutive_failures = 0
+            logger.info("✅ 爬虫实例已重置")
+        except Exception as e:
+            logger.error(f"❌ 重置爬虫失败: {e}")
     
     def cleanup_expired(self):
         """清理过期数据"""
@@ -144,8 +183,10 @@ class NewsScheduler:
             'running': self._running,
             'interval_minutes': self.interval,
             'last_run': self._last_run.isoformat() if self._last_run else None,
+            'last_success': self._last_success.isoformat() if self._last_success else None,
             'next_run': str(schedule.next_run()) if schedule.jobs else None,
             'total_fetched': self._total_fetched,
+            'consecutive_failures': self._consecutive_failures,
             'storage_stats': self.storage.get_stats()
         }
 

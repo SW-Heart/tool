@@ -97,6 +97,44 @@ async def get_stats():
     return stats
 
 
+@app.get("/api/health")
+async def health_check():
+    """
+    服务健康检查
+    
+    - 返回服务状态、最后抓取时间、数据库统计
+    - 如果最新数据时间超过30分钟，返回不健康状态
+    """
+    storage = get_storage()
+    stats = storage.get_stats()
+    
+    # 检查最新数据时间
+    is_healthy = True
+    newest = stats.get('newest')
+    minutes_since_update = None
+    
+    if newest:
+        try:
+            last_time = datetime.fromisoformat(newest)
+            time_diff = datetime.now() - last_time
+            minutes_since_update = int(time_diff.total_seconds() / 60)
+            # 超过30分钟视为不健康
+            if minutes_since_update > 30:
+                is_healthy = False
+        except:
+            pass
+    else:
+        is_healthy = False
+    
+    return {
+        "status": "healthy" if is_healthy else "unhealthy",
+        "total_news": stats.get('total', 0),
+        "newest_at": newest,
+        "minutes_since_update": minutes_since_update,
+        "retention_hours": stats.get('retention_hours', 24)
+    }
+
+
 @app.post("/api/cleanup")
 async def cleanup_expired():
     """
