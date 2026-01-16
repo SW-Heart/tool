@@ -11,7 +11,7 @@ from typing import Optional
 from pathlib import Path
 
 try:
-    from playwright.async_api import async_playwright, Browser, Page
+    from playwright.async_api import async_playwright, Browser, Page, Locator
 except ImportError:
     raise ImportError("请安装 playwright: pip install playwright && playwright install chromium")
 
@@ -20,6 +20,12 @@ class PANewsCrawler:
     """PANews 重要资讯爬虫"""
     
     BASE_URL = "https://www.panewslab.com/zh/newsflash"
+    
+    # Selectors
+    SEL_NEWS_ITEM_CONTAINER = '.news-item-container, .panews-flash-item'  # Generic fallback
+    SEL_IMPORTANT_FILTER_BTN = 'text="只看重要"'
+    SEL_POPUP_CLOSE_BTN = 'button[aria-label="close"], .close-btn, [class*="close"]'
+    SEL_ONESIGNAL_CANCEL = '#onesignal-slidedown-cancel-button'
     
     def __init__(self, headless: bool = True, cache_dir: Optional[str] = None):
         """
@@ -58,6 +64,8 @@ class PANewsCrawler:
             # 例如: https://www.panewslab.com/zh/articles/abc123 -> abc123
             article_id = link.rstrip('/').split('/')[-1]
             if article_id and len(article_id) > 5:
+                # Remove query params if any
+                article_id = article_id.split('?')[0]
                 return hashlib.md5(article_id.encode()).hexdigest()[:12]
         
         # 备用：使用 title + time
@@ -65,183 +73,253 @@ class PANewsCrawler:
         return hashlib.md5(content.encode()).hexdigest()[:12]
     
     async def _close_popups(self, page: Page):
-        """关闭各种弹窗"""
+        """关闭各种弹窗 (带超时保护)"""
         try:
-            # 关闭 OneSignal 订阅弹窗
-            cancel_btn = await page.query_selector('#onesignal-slidedown-cancel-button')
-            if cancel_btn:
-                await cancel_btn.click()
-                await asyncio.sleep(0.5)
-            
-            # 关闭公告弹窗 (点击关闭按钮或背景)
-            close_btns = await page.query_selector_all('button[aria-label="close"], .close-btn, [class*="close"]')
-            for btn in close_btns:
+            # 1. OneSignal
+            try:
+                # Using locator instead of query_selector for auto-waiting if needed, 
+                # but for popups we usually want short timeout.
+                os_btn = page.locator(self.SEL_ONESIGNAL_CANCEL)
+                if await os_btn.is_visible(timeout=2000):
+                    await os_btn.click()
+            except Exception:
+                pass
+
+            # 2. Generic Popups
+            # Try finding close buttons
+            for _ in range(3): # Retry a few times quickly
                 try:
-                    await btn.click()
-                    await asyncio.sleep(0.3)
-                except:
-                    pass
+                    # Look for common close buttons
+                    close_btn = page.locator(self.SEL_POPUP_CLOSE_BTN).first
+                    if await close_btn.is_visible(timeout=1000):
+                        await close_btn.click()
+                        await asyncio.sleep(0.5)
+                    else:
+                        break
+                except Exception:
+                    break
         except Exception as e:
-            print(f"关闭弹窗时出错: {e}")
+            print(f"关闭弹窗时警告: {e}")
     
     async def _enable_important_filter(self, page: Page):
         """启用"只看重要"筛选"""
+        print("尝试点击 '只看重要'...")
         try:
-            # 方法1: 直接点击筛选按钮 (根据 DOM 分析结果)
-            result = await page.evaluate('''
-                () => {
-                    // 方法1: 使用 button#v-0-0 (只看重要按钮)
-                    const filterBtn = document.querySelector('button#v-0-0');
-                    if (filterBtn) {
-                        filterBtn.click();
-                        return "button_clicked";
-                    }
-                    
-                    // 方法2: 查找包含"只看重要"文本的元素
-                    const elements = document.querySelectorAll('label, span, div, button');
-                    for (const el of elements) {
-                        if (el.textContent?.trim() === '只看重要') {
-                            el.click();
-                            return "text_clicked";
-                        }
-                    }
-                    
-                    // 方法3: 查找 checkbox
-                    const checkboxes = document.querySelectorAll('input[type="checkbox"]');
-                    for (const cb of checkboxes) {
-                        const label = cb.closest('label') || cb.nextElementSibling;
-                        if (label?.textContent?.includes('只看重要')) {
-                            if (!cb.checked) cb.click();
-                            return "checkbox_clicked";
-                        }
-                    }
-                    
-                    return "not_found";
-                }
-            ''')
-            print(f"筛选器状态: {result}")
-            await asyncio.sleep(2)  # 等待筛选生效
+            # 使用 Playwright 的 text selector，非常健壮
+            # We wait a bit longer here because the filter button might render late
+            filter_btn = page.locator(self.SEL_IMPORTANT_FILTER_BTN).first
+            
+            # Check if already active? Hard to tell without specific class. 
+            # Usually clicking it enables it.
+            
+            if await filter_btn.is_visible(timeout=5000):
+                await filter_btn.click()
+                print("已点击筛选按钮")
+                # Wait for list to update - hard to detect, just wait a bit or wait for network idle
+                await page.wait_for_load_state("networkidle", timeout=3000)
+                await asyncio.sleep(1.0) 
+            else:
+                print("⚠️ 未找到 '只看重要' 按钮，可能已改版或默认已选")
+                
+                # Fallback: Try button id "v-0-0" seen in old code
+                fallback_btn = page.locator("button#v-0-0")
+                if await fallback_btn.is_visible(timeout=2000):
+                     await fallback_btn.click()
+                     print("已点击 fallback 筛选按钮")
+
         except Exception as e:
             print(f"启用筛选器失败: {e}")
     
     async def _extract_news(self, page: Page) -> list[dict]:
         """从页面提取新闻列表 - 只抓取有时间的快讯，按日期+时间排序"""
-        news_list = await page.evaluate(r'''
+        # We define the evaluation script separately for cleanliness
+        # This script runs in the browser context
+        extract_script = r'''
             () => {
                 const results = [];
                 const timeRegex = /^\d{1,2}:\d{2}$/;
                 
-                // 找到所有时间元素
-                for (const el of document.querySelectorAll('*')) {
-                    if (el.children.length > 0) continue;
-                    const timeText = el.textContent?.trim();
-                    if (!timeText || !timeRegex.test(timeText)) continue;
-                    if (el.closest('aside') || el.closest('nav') || el.closest('[class*="sidebar"]')) continue;
-                    
-                    const time = timeText;
-                    
-                    // 向上查找新闻内容
-                    let container = el.parentElement;
-                    for (let i = 0; i < 5 && container; i++) {
-                        const link = container.querySelector('a[href*="/articles/"], a[href*="/newsflash/"]');
-                        if (link) {
-                            const title = link.textContent?.trim();
-                            const href = link.href || link.getAttribute('href') || '';
-                            
-                            if (!title || title.length < 5) {
-                                container = container.parentElement;
-                                continue;
-                            }
-                            
-                            const descEl = container.querySelector('div.text-neutrals-60, div.line-clamp-3, div.line-clamp-2, p');
-                            let description = descEl?.textContent?.trim() || '';
-                            if (description.startsWith(title)) {
-                                description = description.slice(title.length).trim();
-                            }
-                            
-                            // 从摘要中提取日期 (PANews 1月5日消息 -> 1月5日)
-                            let dateNum = 0;  // 用于排序的日期数值
-                            const dateMatch = description.match(/(\d{1,2})月(\d{1,2})日/);
-                            if (dateMatch) {
-                                const month = parseInt(dateMatch[1]);
-                                const day = parseInt(dateMatch[2]);
-                                dateNum = month * 100 + day;  // 105 = 1月5日
-                            }
-                            
-                            const hasImportantTag = container.querySelector('span.bg-brand-primary, [class*="tag"]') !== null;
-                            
-                            if (results.some(r => r.link === href)) break;
-                            
-                            const [h, m] = time.split(':').map(Number);
-                            
-                                // 构建完整的发布时间 (用于排序)
-                            const now = new Date();
-                            const year = now.getFullYear();
-                            let fullDateTime = '';
-                            if (dateMatch) {
-                                const month = parseInt(dateMatch[1]);
-                                const day = parseInt(dateMatch[2]);
-                                // 格式: 2026-01-05 12:45
-                                fullDateTime = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')} ${time}`;
-                            } else {
-                                // 没有日期则用今天
-                                fullDateTime = `${year}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${time}`;
-                            }
-                            
-                            results.push({
-                                time,
-                                title,
-                                content: description,
-                                link: href,
-                                isImportant: hasImportantTag,
-                                publishDateTime: fullDateTime  // 完整日期时间
-                            });
-                            break;
-                        }
-                        container = container.parentElement;
+                // Helper to finding the news container
+                // PANews structure usually: ... -> div.item -> [ time, content... ]
+                // We scan for time elements as anchors
+                
+                const allElements = document.querySelectorAll('*');
+                
+                for (const el of allElements) {
+                    // Optimization: Skip container elements immediately
+                    if (el.tagName === 'DIV' || el.tagName === 'SECTION' || el.tagName === 'MAIN') {
+                        if (el.children.length > 5) continue; // heuristic
                     }
-                }
-                
-                // 不再重新排序，保持页面原始顺序（页面已按发布时间排序）
+                    if (el.children.length > 1) continue; // leaf nodes or close to leaf
 
-                
+                    const text = el.textContent?.trim();
+                    if (!text || !timeRegex.test(text)) continue;
+                    
+                    // Exclude sidebars
+                    if (el.closest('aside') || el.closest('nav') || el.closest('.footer')) continue;
+                    
+                    const timeStr = text;
+                    
+                    // Found a time string (e.g. "14:24"). logic triggers.
+                    // Walk up to find the container
+                    let container = el.parentElement;
+                    let foundNews = false;
+                    
+                    for (let i = 0; i < 6 && container; i++) {
+                        // Look for links inside this container
+                        const linkEl = container.querySelector('a[href*="/newsflash/"], a[href*="/articles/"]');
+                        if (!linkEl) {
+                            container = container.parentElement;
+                            continue;
+                        }
+
+                        const title = linkEl.textContent?.trim();
+                        if (!title || title.length < 2) {
+                             container = container.parentElement;
+                             continue;
+                        }
+                        
+                        const href = linkEl.href;
+                        
+                        // Extract content/desc
+                        // Heuristic: sibling of title, or inside container but not title/time
+                        // Often text-neutrals-60 or similar
+                        let content = "";
+                        const contentEl = container.querySelector('.line-clamp-3, .line-clamp-2, p, [class*="content"]');
+                        if (contentEl && contentEl !== linkEl) {
+                            content = contentEl.textContent?.trim() || "";
+                        }
+                        
+                        // Clean content if it starts with title
+                        if (content.startsWith(title)) {
+                            content = content.slice(title.length).trim();
+                        }
+
+                        // Determine Date
+                        // Try to find date in the text (e.g. description often starts with "PANews 1月16日消息")
+                        let dateMatch = content.match(/(\d{1,2})月(\d{1,2})日/);
+                        if (!dateMatch) {
+                            // Try container text
+                            dateMatch = container.textContent.match(/(\d{1,2})月(\d{1,2})日/);
+                        }
+                        
+                        const now = new Date();
+                        let year = now.getFullYear();
+                        let month = now.getMonth() + 1;
+                        let day = now.getDate();
+                        
+                        if (dateMatch) {
+                            month = parseInt(dateMatch[1]);
+                            day = parseInt(dateMatch[2]);
+                            
+                            // Year transition logic
+                            // If news month is 12 and current month is 1, assume last year
+                            // Or more generally, if news date is "in the future" by more than a day, it's likely last year
+                            const currentTs = now.getTime();
+                            const newsDateCurrentYear = new Date(year, month - 1, day);
+                            
+                            // 30 days buffer for safe check (e.g. clock skew or timezone)
+                            // If news date (current year) is > now + 2 days, it's probably last year
+                            if (newsDateCurrentYear.getTime() > currentTs + 86400000 * 2) {
+                                year -= 1;
+                            }
+                        }
+                        
+                        const fullDateTime = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')} ${timeStr}`;
+                        
+                        // Check exact important tag
+                        const isImportant = container.querySelector('.bg-brand-primary, [class*="important"]') !== null || 
+                                          (container.textContent && container.textContent.includes('重要')); 
+
+                        // Avoid duplicates in this batch
+                        if (!results.some(r => r.link === href)) {
+                            results.push({
+                                time: timeStr,
+                                title: title,
+                                content: content,
+                                link: href,
+                                isImportant: isImportant,
+                                publishDateTime: fullDateTime
+                            });
+                        }
+                        
+                        foundNews = true;
+                        break; // Found for this time element
+                    }
+                    if (foundNews) continue;
+                }
                 return results;
             }
-        ''')
+        '''
+        try:
+            # Wait for content to actually be there specifically
+            # We look for something that looks like news content
+            await page.wait_for_selector('a[href*="/newsflash/"]', timeout=5000)
+        except:
+            print("⚠️超时: 页面可能未加载完全")
+
+        news_list = await page.evaluate(extract_script)
         return news_list
     
-    async def fetch_important_news(self, only_new: bool = True, save_to_db: bool = True) -> list[dict]:
+    async def fetch_important_news(self, only_new: bool = True, save_to_db: bool = True, timeout: int = 300) -> list[dict]:
         """
-        获取重要快讯
+        获取重要快讯 (带超时保护)
         
         Args:
             only_new: 是否只返回新的（未见过的）新闻
             save_to_db: 是否保存到数据库
+            timeout: 最大执行时间（秒），默认5分钟
             
         Returns:
             新闻列表，每条包含 time, title, content, link, id
         """
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=self.headless)
-            context = await browser.new_context(
-                viewport={'width': 1280, 'height': 800},
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        try:
+            return await asyncio.wait_for(
+                self._fetch_important_news_impl(only_new, save_to_db),
+                timeout=timeout
             )
-            page = await context.new_page()
-            
-            try:
-                print(f"正在访问 {self.BASE_URL}...")
-                await page.goto(self.BASE_URL, wait_until='domcontentloaded', timeout=60000)
-                await asyncio.sleep(5)  # 等待JS渲染完成
+        except asyncio.TimeoutError:
+            print(f"⚠️ 爬取超时 (超过 {timeout} 秒)，强制终止")
+            return []
+        except Exception as e:
+            print(f"❌ 爬取过程出错: {e}")
+            return []
+    
+    async def _fetch_important_news_impl(self, only_new: bool = True, save_to_db: bool = True) -> list[dict]:
+        """实际执行爬取操作的内部方法"""
+        browser = None
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=self.headless,
+                    args=['--disable-blink-features=AutomationControlled'] # 防止被检测
+                )
+                context = await browser.new_context(
+                    viewport={'width': 1280, 'height': 800},
+                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                )
+                page = await context.new_page()
                 
+                print(f"正在访问 {self.BASE_URL}...")
+                response = await page.goto(self.BASE_URL, wait_until='domcontentloaded', timeout=60000)
+                if not response:
+                    print("❌ 无法加载页面 (Response is None)")
+                    return []
+                    
+                # 等待基本的快讯元素出现，而不是死等sleep
+                try:
+                    await page.wait_for_selector('.list-content, .news-list, body', state='visible', timeout=10000)
+                except:
+                    pass
+
                 # 关闭弹窗
                 await self._close_popups(page)
                 
                 # 启用"只看重要"筛选
                 await self._enable_important_filter(page)
                 
-                # 等待内容加载
-                await asyncio.sleep(2)
+                # 再次等待，确保列表刷新
+                await asyncio.sleep(1.0) # Small buffer
                 
                 # 提取新闻
                 news_list = await self._extract_news(page)
@@ -277,11 +355,22 @@ class PANewsCrawler:
                 print(f"其中 {len(results)} 条为新资讯")
                 return results
                 
-            except Exception as e:
-                print(f"爬取失败: {e}")
-                raise
-            finally:
-                await browser.close()
+        except asyncio.CancelledError:
+            print("⚠️ 爬取任务被取消")
+            raise
+        except Exception as e:
+            print(f"爬取失败: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        finally:
+            # 确保浏览器被关闭
+            if browser:
+                try:
+                    await browser.close()
+                    print("🧹 浏览器已关闭")
+                except Exception:
+                    pass
     
     def fetch_sync(self, only_new: bool = True, save_to_db: bool = True) -> list[dict]:
         """
@@ -311,8 +400,8 @@ if __name__ == "__main__":
     print("="*60)
     
     for item in news:
-        print(f"\n⏰ {item['time']}")
+        print(f"\n⏰ {item['publishDateTime']}")
         print(f"📰 {item['title']}")
-        if item['content']:
+        if item.get('content'):
             print(f"   {item['content'][:100]}...")
         print(f"🔗 {item['link']}")
