@@ -77,7 +77,7 @@ class BaseScraper(ABC):
                         logger.info(f"成功解析 {len(flows)} 条 {self.etf_type.upper()} ETF 数据")
                         
                         # 如果数据量过少，可能是加载不全，保存快照以便排查
-                        if len(flows) < 20:
+                        if len(flows) < 10:
                             logger.warning(f"数据量过少 ({len(flows)} 条)，保存调试信息以供检查")
                             self._save_debug_info(browser)
                         
