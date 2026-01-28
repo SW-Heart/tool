@@ -69,7 +69,8 @@ class BrowserDriver:
         # 设置用户代理
         options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
-        driver = uc.Chrome(options=options)
+        # 显式指定版本以匹配服务器 Chrome (v143)
+        driver = uc.Chrome(options=options, version_main=143)
         driver.set_page_load_timeout(self.timeout)
         
         return driver
