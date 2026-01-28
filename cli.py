@@ -46,8 +46,9 @@ def scrape(etf_type: str, headless: bool):
         
         if flows:
             # 显示最新几条
+            # 显示所有抓取到的数据
             click.echo("\n最新数据:")
-            _display_flows(flows[:5])
+            _display_flows(flows)
             
     except Exception as e:
         click.echo(click.style(f"✗ 爬取失败: {e}", fg='red'))
