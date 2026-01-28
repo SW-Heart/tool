@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(__file__).rsplit('/', 3)[0])
 from config import SCRAPER_CONFIG, FARSIDE_URLS, BASE_DIR
-from etf_scraper.browser.driver import BrowserDriver, get_browser
+from etf_scraper.browser.playwright_driver import PlaywrightDriver, get_browser
 from etf_scraper.parser.table_parser import TableParser
 from etf_scraper.storage.models import ETFDailyFlow
 from etf_scraper.storage.database import Database
