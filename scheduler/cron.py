@@ -99,17 +99,24 @@ class ETFScheduler:
             logger.info(f"{etf_type.upper()} 数据已是最新，无需更新")
     
     def setup_schedule(self):
-        """设置定时任务：每天 0:00, 6:00, 12:00, 18:00"""
+        """
+        设置定时任务 (服务器时间为 UTC)
+        对应北京时间 (UTC+8): 
+        00:00 UTC -> 08:00 (早报)
+        06:00 UTC -> 14:00 (午间更新，昨天数据通常此时已出)
+        12:00 UTC -> 20:00 (晚间)
+        18:00 UTC -> 02:00 (凌晨)
+        """
         schedule.every().day.at("00:00").do(self.scrape_all)
         schedule.every().day.at("06:00").do(self.scrape_all)
         schedule.every().day.at("12:00").do(self.scrape_all)
         schedule.every().day.at("18:00").do(self.scrape_all)
         
-        logger.info("定时任务已设置:")
-        logger.info("  - 每天 00:00 爬取")
-        logger.info("  - 每天 06:00 爬取")
-        logger.info("  - 每天 12:00 爬取")
-        logger.info("  - 每天 18:00 爬取")
+        logger.info("定时任务已设置 (UTC时间):")
+        logger.info("  - 每天 00:00 (北京时间 08:00)")
+        logger.info("  - 每天 06:00 (北京时间 14:00) *重点更新*")
+        logger.info("  - 每天 12:00 (北京时间 20:00)")
+        logger.info("  - 每天 18:00 (北京时间 02:00)")
     
     def run(self, run_immediately: bool = False):
         """
