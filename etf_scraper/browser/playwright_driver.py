@@ -68,20 +68,28 @@ class PlaywrightDriver:
                 logger.error("页面无响应")
                 return False
                 
-            # 模拟用户鼠标滚轮滚动，比 scrollTo 更拟人，能触发更多懒加载事件
+            # 模拟用户滚动到底部以触发懒加载
             try:
-                # 连续滚动几次
-                for _ in range(5):
-                    self._page.mouse.wheel(0, 1000)
-                    time.sleep(0.5)
+                # 移动鼠标到页面中心
+                viewport = self._page.viewport_size
+                if viewport:
+                    self._page.mouse.move(viewport['width'] / 2, viewport['height'] / 2)
                 
-                # 滚回顶部 (可选，如果表头固定则不需要，但为了安全起见)
+                # 使用键盘 End 键滚动到底部 (通常比 wheel 更有效触发 infinite scroll)
+                self._page.keyboard.press("End")
+                time.sleep(2)
+                
+                # 再试一次 PageDown
+                self._page.keyboard.press("PageDown")
+                time.sleep(1)
+                
+                # 滚回顶部 (某些表格需要表头可见)
                 # self._page.evaluate("window.scrollTo(0, 0)")
             except Exception:
                 pass
                 
             # 简单的反爬虫绕过等待
-            time.sleep(3)
+            time.sleep(5)
             
             if wait_for_selector:
                 self._page.wait_for_selector(wait_for_selector, state='attached', timeout=self.timeout)
