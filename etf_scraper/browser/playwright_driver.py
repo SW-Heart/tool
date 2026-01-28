@@ -61,17 +61,27 @@ class PlaywrightDriver:
             
         try:
             logger.info(f"正在访问: {url}")
-            response = self._page.goto(url, wait_until='domcontentloaded')
+            # 使用 networkidle 等待网络请求完成 (更稳，但要注意有些页面一直有请求)
+            # 或者先 domcontentloaded 然后手动 scroll
+            response = self._page.goto(url, wait_until='domcontentloaded', timeout=self.timeout)
             
             if not response:
                 logger.error("页面无响应")
                 return False
                 
+            # 模拟用户滚动到底部以触发懒加载
+            try:
+                self._page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                time.sleep(1)
+                self._page.evaluate("window.scrollTo(0, 0)")
+            except Exception:
+                pass
+                
             # 简单的反爬虫绕过等待
-            time.sleep(2)
+            time.sleep(5)  # 增加等待时间到 5 秒
             
             if wait_for_selector:
-                self._page.wait_for_selector(wait_for_selector, state='attached')
+                self._page.wait_for_selector(wait_for_selector, state='attached', timeout=self.timeout)
                 
             logger.info("页面加载成功")
             return True
