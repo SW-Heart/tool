@@ -70,7 +70,14 @@ class BrowserDriver:
         options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
         # 显式指定版本以匹配服务器 Chrome (v143)
-        driver = uc.Chrome(options=options, version_main=143)
+        # 强制删除旧的驱动文件以确保重新下载 (在代码层面做不到删除文件，但可以通过配置引导)
+        # 如果 automatic update 仍然下载 144，我们需要更强力的约束
+        driver = uc.Chrome(
+            options=options, 
+            version_main=143,
+            driver_executable_path=None, # 让 uc 自动处理
+            browser_executable_path=None # 自动查找 Chrome
+        )
         driver.set_page_load_timeout(self.timeout)
         
         return driver
