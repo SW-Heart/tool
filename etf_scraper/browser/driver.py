@@ -137,6 +137,24 @@ class BrowserDriver:
             EC.presence_of_element_located((By.CSS_SELECTOR, selector))
         )
     
+    def save_screenshot(self, path: str) -> bool:
+        """保存截图"""
+        try:
+            return self.driver.save_screenshot(str(path))
+        except Exception as e:
+            logger.error(f"保存截图失败: {e}")
+            return False
+
+    def save_page_source(self, path: str) -> bool:
+        """保存页面源码"""
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(self.driver.page_source)
+            return True
+        except Exception as e:
+            logger.error(f"保存源码失败: {e}")
+            return False
+
     def close(self):
         """关闭浏览器"""
         if self._driver:

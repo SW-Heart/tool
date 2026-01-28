@@ -7,8 +7,9 @@ from abc import ABC, abstractmethod
 from typing import List, Optional
 
 import sys
+from pathlib import Path
 sys.path.insert(0, str(__file__).rsplit('/', 3)[0])
-from config import SCRAPER_CONFIG, FARSIDE_URLS
+from config import SCRAPER_CONFIG, FARSIDE_URLS, BASE_DIR
 from etf_scraper.browser.driver import BrowserDriver, get_browser
 from etf_scraper.parser.table_parser import TableParser
 from etf_scraper.storage.models import ETFDailyFlow
@@ -54,35 +55,42 @@ class BaseScraper(ABC):
                 logger.info(f"开始爬取 {self.etf_type.upper()} ETF 数据 (尝试 {attempt + 1}/{retry_count})")
                 
                 with get_browser(headless=headless) as browser:
-                    # 访问页面
-                    success = browser.get(self.url, wait_for_selector="table.etf")
-                    
-                    if not success:
-                        raise Exception("页面加载失败")
-                    
-                    # 额外等待确保JavaScript执行完成
-                    time.sleep(SCRAPER_CONFIG["request_delay"])
-                    
-                    # 获取页面源码
-                    html = browser.get_page_source()
-                    
-                    # 解析数据
-                    flows = self.parser.parse_html(html)
-                    
-                    if not flows:
-                        raise Exception("未解析到任何数据")
-                    
-                    logger.info(f"成功解析 {len(flows)} 条 {self.etf_type.upper()} ETF 数据")
-                    
-                    # 保存到数据库
-                    if save:
-                        saved = self.db.save_daily_flows(flows)
-                        logger.info(f"保存 {saved} 条数据到数据库")
-                    
-                    return flows
+                    try:
+                        # 访问页面
+                        success = browser.get(self.url, wait_for_selector="table.etf")
+                        
+                        if not success:
+                            raise Exception("页面加载失败")
+                        
+                        # 额外等待确保JavaScript执行完成
+                        time.sleep(SCRAPER_CONFIG["request_delay"])
+                        
+                        # 获取页面源码
+                        html = browser.get_page_source()
+                        
+                        # 解析数据
+                        flows = self.parser.parse_html(html)
+                        
+                        if not flows:
+                            raise Exception("未解析到任何数据")
+                        
+                        logger.info(f"成功解析 {len(flows)} 条 {self.etf_type.upper()} ETF 数据")
+                        
+                        # 保存到数据库
+                        if save:
+                            saved = self.db.save_daily_flows(flows)
+                            logger.info(f"保存 {saved} 条数据到数据库")
+                        
+                        return flows
+                        
+                    except Exception as e:
+                        # 在浏览器关闭前保存调试信息
+                        logger.error(f"爬取过程中出错: {e}")
+                        self._save_debug_info(browser)
+                        raise e
                     
             except Exception as e:
-                logger.error(f"爬取失败: {e}")
+                logger.error(f"本次尝试失败: {e}")
                 
                 if attempt < retry_count - 1:
                     logger.info(f"等待 {retry_delay} 秒后重试...")
@@ -92,6 +100,27 @@ class BaseScraper(ABC):
                     raise
         
         return []
+
+    def _save_debug_info(self, browser):
+        """保存调试信息(截图和源码)"""
+        try:
+            timestamp = int(time.time())
+            log_dir = BASE_DIR / "logs"
+            
+            # 确保目录存在
+            log_dir.mkdir(exist_ok=True)
+            
+            screenshot_path = log_dir / f"error_{self.etf_type}_{timestamp}.png"
+            html_path = log_dir / f"error_{self.etf_type}_{timestamp}.html"
+            
+            if browser.save_screenshot(screenshot_path):
+                logger.info(f"已保存调试截图: {screenshot_path}")
+                
+            if browser.save_page_source(html_path):
+                logger.info(f"已保存调试源码: {html_path}")
+                
+        except Exception as e:
+            logger.error(f"保存调试信息失败: {e}")
     
     def get_latest_data(self, days: int = 15) -> List[ETFDailyFlow]:
         """
