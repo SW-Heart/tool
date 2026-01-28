@@ -41,7 +41,7 @@ class PlaywrightDriver:
         # 创建上下文，设置 User-Agent 和 Viewport
         self._context = self._browser.new_context(
             viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
         )
         
         # 增加防止被检测的脚本
@@ -61,24 +61,27 @@ class PlaywrightDriver:
             
         try:
             logger.info(f"正在访问: {url}")
-            # 使用 networkidle 等待网络请求完成 (更稳，但要注意有些页面一直有请求)
-            # 或者先 domcontentloaded 然后手动 scroll
+            # 使用 networkidle 等待网络请求完成
             response = self._page.goto(url, wait_until='domcontentloaded', timeout=self.timeout)
             
             if not response:
                 logger.error("页面无响应")
                 return False
                 
-            # 模拟用户滚动到底部以触发懒加载
+            # 模拟用户鼠标滚轮滚动，比 scrollTo 更拟人，能触发更多懒加载事件
             try:
-                self._page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                time.sleep(1)
-                self._page.evaluate("window.scrollTo(0, 0)")
+                # 连续滚动几次
+                for _ in range(5):
+                    self._page.mouse.wheel(0, 1000)
+                    time.sleep(0.5)
+                
+                # 滚回顶部 (可选，如果表头固定则不需要，但为了安全起见)
+                # self._page.evaluate("window.scrollTo(0, 0)")
             except Exception:
                 pass
                 
             # 简单的反爬虫绕过等待
-            time.sleep(5)  # 增加等待时间到 5 秒
+            time.sleep(3)
             
             if wait_for_selector:
                 self._page.wait_for_selector(wait_for_selector, state='attached', timeout=self.timeout)
